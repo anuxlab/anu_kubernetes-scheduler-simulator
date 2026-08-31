@@ -262,14 +262,12 @@ func (sim *Simulator) createPod(p *corev1.Pod) error {
 	if _, err := sim.client.CoreV1().Pods(p.Namespace).Create(sim.ctx, p, metav1.CreateOptions{}); err != nil {
 		return fmt.Errorf("%s(%s): %s", simontype.CreatePodError, utils.GeneratePodKey(p), err.Error())
 	}
-
 	// synchronization
 	sim.syncPodCreate(p, 2*time.Millisecond)   // pass the pod pointer
 	// Now p.Spec.NodeName has been set by the scheduler, no need to re-fetch
 	if p.Spec.NodeName != "" {
 		sim.syncNodeUpdateOnPodCreate(p.Spec.NodeName, p, 2*time.Millisecond)
-	}
-	else {
+	} else {
 		log.Errorf("[createPod] pod(%s) not created, should not happen", utils.GeneratePodKey(p))
 	}
 	return nil
@@ -284,12 +282,10 @@ func (sim *Simulator) deletePod(p *corev1.Pod) error {
 		log.Debugf("[deletePod] attempt to delete a non-existed pod(%s)\n", utils.GeneratePodKey(p))
 		return nil
 	}
-
 	// delete the pod
 	if err := sim.client.CoreV1().Pods(p.Namespace).Delete(sim.ctx, p.Name, metav1.DeleteOptions{}); err != nil {
 		return fmt.Errorf("%s(%s): %s", simontype.DeletePodError, utils.GeneratePodKey(p), err.Error())
 	}
-
 	// synchronization
 	sim.syncPodDelete(p.Namespace, p.Name, 500*time.Microsecond)
 	if nodeName != "" {
@@ -302,7 +298,7 @@ func (sim *Simulator) deletePod(p *corev1.Pod) error {
 
 func (sim *Simulator) assumePod(pod *corev1.Pod) *simontype.UnscheduledPod {
 	err := sim.createPod(pod)
-	if err != nil || sim.isPodUnscheduled(pod.Namespace, pod.Name) {
+	if err != nil || sim.isPodUnscheduled(pod) {
 		if err = sim.deletePod(pod); err != nil {
 			log.Errorf("[assumePod] failed to delete pod(%s)\n", utils.GeneratePodKey(pod))
 		}
