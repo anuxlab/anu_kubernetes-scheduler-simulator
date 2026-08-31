@@ -4,7 +4,7 @@ import (
 	"sync"
 
 	"k8s.io/api/core/v1"
-	"k8s.io/kubernetes/pkg/scheduler/framework"
+	// "k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 // Vertex represents a physical resource unit (NUMA node, GPU, etc.)
