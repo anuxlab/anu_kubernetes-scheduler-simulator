@@ -138,7 +138,8 @@ import (
     "k8s.io/kubernetes/pkg/scheduler/plugins/volumezone"
 
     // H-TAFM PLUGIN REGISTRATION
-    _ "github.com/anuxlab/anu_kubernetes-scheduler-simulator/pkg/scheduler/htafm"
+    // _ "github.com/anuxlab/anu_kubernetes-scheduler-simulator/pkg/scheduler/htafm"
+    _ "github.com/hkust-adsl/kubernetes-scheduler-simulator/pkg/scheduler/htafm"
 
     // Custom simulator plugins
     "k8s.io/kubernetes/pkg/scheduler/plugins/bestfit"
