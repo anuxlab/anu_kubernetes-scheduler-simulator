@@ -1,4 +1,5 @@
 module github.com/anuxlab/anu_kubernetes-scheduler-simulator
+
 go 1.15
 
 require (
