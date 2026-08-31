@@ -1,4 +1,3 @@
-<!-- module github.com/hkust-adsl/kubernetes-scheduler-simulator -->
 module github.com/anuxlab/anu_kubernetes-scheduler-simulator
 go 1.15
 
