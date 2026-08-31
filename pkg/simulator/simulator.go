@@ -17,6 +17,7 @@ import (
 	"k8s.io/client-go/informers"
 	externalclientset "k8s.io/client-go/kubernetes"
 	fakeclientset "k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/testing" // <-- NEW import for reactor
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/kubernetes/cmd/kube-scheduler/app/config"
@@ -111,6 +112,36 @@ func New(opts ...Option) (Interface, error) {
 		client, err = externalclientset.NewForConfig(varConfig)
 	} else {
 		client = fakeclientset.NewSimpleClientset()
+
+		// =====================================================================
+		//  FIX: Add a reactor to sync Pod's nodeName when a Binding is created
+		// =====================================================================
+		// This prevents the fake client from storing *v1.Binding in the Pod
+		// informer, which causes type mismatch panics and hangs.
+		fakeClient := client.(*fakeclientset.Clientset)
+		fakeClient.PrependReactor("create", "bindings", func(action testing.Action) (bool, runtime.Object, error) {
+			binding := action.(testing.CreateAction).GetObject().(*corev1.Binding)
+
+			// Get the corresponding Pod
+			pod, err := fakeClient.CoreV1().Pods(binding.Namespace).Get(context.TODO(), binding.Name, metav1.GetOptions{})
+			if err != nil {
+				// Pod not found; let the binding creation proceed anyway
+				return false, nil, nil
+			}
+
+			// Update the Pod's node name
+			pod.Spec.NodeName = binding.Target.Name
+
+			// Update the Pod in the fake store
+			_, err = fakeClient.CoreV1().Pods(binding.Namespace).Update(context.TODO(), pod, metav1.UpdateOptions{})
+			if err != nil {
+				log.Warnf("Failed to update pod %s after binding: %v", binding.Name, err)
+			}
+
+			// Return false to let the default binding creation proceed
+			return false, nil, nil
+		})
+		// =====================================================================
 	}
 	kubeSchedulerConfig.Client = client
 	sharedInformerFactory := informers.NewSharedInformerFactory(client, 0)
