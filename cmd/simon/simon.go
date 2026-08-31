@@ -1,15 +1,18 @@
 package simon
 
 import (
-	goflag "flag"
-	log "github.com/sirupsen/logrus"
-	"github.com/spf13/cobra"
-	cliflag "k8s.io/component-base/cli/flag"
-	"os"
+    goflag "flag"
+    log "github.com/sirupsen/logrus"
+    "github.com/spf13/cobra"
+    cliflag "k8s.io/component-base/cli/flag"
+    "os"
 
-	"github.com/hkust-adsl/kubernetes-scheduler-simulator/cmd/apply"
-	"github.com/hkust-adsl/kubernetes-scheduler-simulator/cmd/doc"
-	"github.com/hkust-adsl/kubernetes-scheduler-simulator/cmd/version"
+    "github.com/hkust-adsl/kubernetes-scheduler-simulator/cmd/apply"
+    "github.com/hkust-adsl/kubernetes-scheduler-simulator/cmd/doc"
+    "github.com/hkust-adsl/kubernetes-scheduler-simulator/cmd/version"
+
+    // 👇 Force import of the H‑TAFM plugin package
+    _ "github.com/hkust-adsl/kubernetes-scheduler-simulator/pkg/scheduler/htafm"
 )
 
 const (
