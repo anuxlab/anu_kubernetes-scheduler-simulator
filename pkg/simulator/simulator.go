@@ -31,6 +31,7 @@ import (
 	simontype "github.com/hkust-adsl/kubernetes-scheduler-simulator/pkg/type"
 	gpushareutils "github.com/hkust-adsl/kubernetes-scheduler-simulator/pkg/type/open-gpu-share/utils"
 	"github.com/hkust-adsl/kubernetes-scheduler-simulator/pkg/utils"
+	"github.com/hkust-adsl/kubernetes-scheduler-simulator/pkg/scheduler/htafm"
 )
 
 // Simulator is used to simulate a cluster and pods scheduling
@@ -154,6 +155,12 @@ func New(opts ...Option) (Interface, error) {
 		},
 		simontype.FGDScorePluginName: func(configuration runtime.Object, handle framework.Handle) (framework.Plugin, error) {
 			return simonplugin.NewFGDScorePlugin(configuration, handle, &sim.typicalPods)
+		},
+		simontype.FGDScorePluginName: func(configuration runtime.Object, handle framework.Handle) (framework.Plugin, error) {
+        return simonplugin.NewFGDScorePlugin(configuration, handle, &sim.typicalPods)
+		},
+		"HTAFMScore": func(configuration runtime.Object, handle framework.Handle) (framework.Plugin, error) {
+			return htafm.New(configuration, handle)
 		},
 	}
 	sim.scheduler, err = scheduler.New(
