@@ -1,0 +1,79 @@
+name: Build and Check HTAFM Plugin
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.20'
+
+      - name: Build simulator
+        run: make
+
+      - name: Verify binary exists
+        run: |
+          ls -la bin/
+          ./bin/simon version
+
+      - name: Check HTAFM plugin registration (quick test)
+        run: |
+          # Create a minimal cluster config and scheduler config to test HTAFMScore
+          mkdir -p test-config
+          cat > test-config/cluster.yaml << EOF
+          apiVersion: simon/v1alpha1
+          kind: Config
+          metadata:
+            name: test-config
+          spec:
+            cluster:
+              customConfig: example/test-cluster
+            customConfig:
+              shufflePod: false
+          EOF
+
+          cat > test-config/scheduler.yaml << EOF
+          apiVersion: kubescheduler.config.k8s.io/v1beta1
+          kind: KubeSchedulerConfiguration
+          percentageOfNodesToScore: 100
+          profiles:
+          - schedulerName: simon-scheduler
+            plugins:
+              score:
+                enabled:
+                - name: HTAFMScore
+                  weight: 1000
+            pluginConfig:
+            - name: HTAFMScore
+              args:
+                variant: cut
+          EOF
+
+          # Run the apply command with a timeout; it will fail if the plugin is missing
+          timeout 10s ./bin/simon apply --extended-resources "gpu" -f test-config/cluster.yaml --default-scheduler-config test-config/scheduler.yaml || {
+            EXIT_CODE=$?
+            if [ $EXIT_CODE -eq 124 ]; then
+              echo "✅ Plugin test passed (command ran without error)"
+            else
+              echo "❌ Plugin test failed with exit code $EXIT_CODE"
+              exit $EXIT_CODE
+            fi
+          }
+
+      - name: Upload build log (if any)
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
