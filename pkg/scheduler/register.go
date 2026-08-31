@@ -28,6 +28,7 @@ import (
 
 // RegisterAllPlugins registers all built‑in scheduler plugins.
 func RegisterAllPlugins(registry *runtime.Registry) {
+    fmt.Println(">>> RegisterAllPlugins called") 
     // Kubernetes core plugins
     registry.Register("ImageLocality", imagelocality.New)
     registry.Register("InterPodAffinity", interpodaffinity.New)
@@ -51,4 +52,5 @@ func RegisterAllPlugins(registry *runtime.Registry) {
 
     // H‑TAFM plugin
     registry.Register("HTAFMScore", htafm.New)
+    fmt.Println(">>> HTAFMScore registered") 
 }
