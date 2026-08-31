@@ -264,13 +264,11 @@ func (sim *Simulator) createPod(p *corev1.Pod) error {
 	}
 
 	// synchronization
-	sim.syncPodCreate(p.Namespace, p.Name, 2*time.Millisecond)
-	pod, _ := sim.client.CoreV1().Pods(p.Namespace).Get(sim.ctx, p.Name, metav1.GetOptions{})
-	if pod != nil {
-		if pod.Spec.NodeName != "" {
-			sim.syncNodeUpdateOnPodCreate(pod.Spec.NodeName, pod, 2*time.Millisecond)
-			log.Infof("pod(%s) is scheduled to node(%s)\n", utils.GeneratePodKey(pod), pod.Spec.NodeName)
-		}
+	sim.syncPodCreate(p, 2*time.Millisecond)   // pass the pod pointer
+	// Now p.Spec.NodeName has been set by the scheduler, no need to re-fetch
+	if p.Spec.NodeName != "" {
+		sim.syncNodeUpdateOnPodCreate(p.Spec.NodeName, p, 2*time.Millisecond)
+	}
 	} else {
 		log.Errorf("[createPod] pod(%s) not created, should not happen", utils.GeneratePodKey(p))
 	}
@@ -351,13 +349,11 @@ func (sim *Simulator) Close() {
 	sim.cancelFunc()
 }
 
-func (sim *Simulator) isPodScheduled(ns, name string) bool {
-	pod, _ := sim.client.CoreV1().Pods(ns).Get(sim.ctx, name, metav1.GetOptions{})
-	return pod != nil && pod.Spec.NodeName != ""
+func (sim *Simulator) isPodScheduled(pod *corev1.Pod) bool {
+    return pod != nil && pod.Spec.NodeName != ""
 }
 
-func (sim *Simulator) isPodUnscheduled(ns, name string) bool {
-	pod, _ := sim.client.CoreV1().Pods(ns).Get(sim.ctx, name, metav1.GetOptions{})
+func (sim *Simulator) isPodUnscheduled(pod *corev1.Pod) bool {
 	if pod != nil && pod.Spec.NodeName == "" {
 		for _, condition := range pod.Status.Conditions {
 			if condition.Type == corev1.PodScheduled && condition.Status == corev1.ConditionFalse &&
@@ -369,8 +365,8 @@ func (sim *Simulator) isPodUnscheduled(ns, name string) bool {
 	return false
 }
 
-func (sim *Simulator) isPodCreated(ns, name string) bool {
-	return sim.isPodScheduled(ns, name) || sim.isPodUnscheduled(ns, name)
+func (sim *Simulator) isPodCreated(pod *corev1.Pod) bool {
+    return sim.isPodScheduled(pod) || sim.isPodUnscheduled(pod)
 }
 
 func (sim *Simulator) isPodDeleted(ns, name string) bool {
@@ -402,13 +398,13 @@ func (sim *Simulator) isPodFoundInNodeGpuAnno(node *corev1.Node, p *corev1.Pod) 
 	return false
 }
 
-func (sim *Simulator) syncPodCreate(ns, name string, d time.Duration) {
-	for {
-		if sim.isPodCreated(ns, name) {
-			break
-		}
-		time.Sleep(d)
-	}
+func (sim *Simulator) syncPodCreate(pod *corev1.Pod, d time.Duration) {
+    for {
+        if sim.isPodCreated(pod) {
+            break
+        }
+        time.Sleep(d)
+    }
 }
 
 func (sim *Simulator) syncPodDelete(ns, name string, d time.Duration) {
