@@ -278,6 +278,8 @@ func RegisterAllPlugins(registry *runtime.Registry) {
 	registry.Register("GpuPacking", gpupacking.New)
 	registry.Register("Random", random.New)
 
+    registry.Register("HTAFMScore", htafm.New)
+
 	// The H‑TAFM plugin is registered via its own init() function,
 	// triggered by the blank import above.
 }
