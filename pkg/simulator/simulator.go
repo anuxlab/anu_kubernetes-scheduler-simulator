@@ -214,14 +214,13 @@ func (sim *Simulator) startBindingController() {
 			return false, nil, nil
 		}
 
-		// Find the corresponding Pod in the store
+		// Update the Pod in the store
 		pod, err := sim.client.CoreV1().Pods(binding.Namespace).Get(sim.ctx, binding.Name, metav1.GetOptions{})
 		if err != nil {
 			// Pod not found; let binding creation proceed
 			return false, nil, nil
 		}
 
-		// Update the Pod's nodeName if not already set
 		if pod.Spec.NodeName == "" {
 			pod.Spec.NodeName = binding.Target.Name
 			_, err = sim.client.CoreV1().Pods(binding.Namespace).Update(sim.ctx, pod, metav1.UpdateOptions{})
@@ -299,8 +298,9 @@ func (sim *Simulator) syncPodCreate(pod *corev1.Pod, d time.Duration) {
 }
 
 // ------------------------------------------------------------------
-// The rest of the file remains unchanged.
-// (All other functions: deletePod, assumePod, SchedulePods, Close, etc.)
+// The rest of the file is untouched from the original HKUST version.
+// All other functions (deletePod, assumePod, SchedulePods, Close, etc.)
+// remain exactly as they were.
 // ------------------------------------------------------------------
 
 // RunCluster with real client in a production cluster or fake client in a simulated cluster.
@@ -380,12 +380,6 @@ func (sim *Simulator) runScheduler() {
 		sim.scheduler.Run(sim.ctx)
 	}()
 }
-
-// ------------------------------------------------------------------
-// deletePod, assumePod, SchedulePods, Close, isPodScheduled, etc.
-// (Keep the exact same versions as in your original file.)
-// We list them below for completeness.
-// ------------------------------------------------------------------
 
 func (sim *Simulator) deletePod(p *corev1.Pod) error {
 	pod, _ := sim.client.CoreV1().Pods(p.Namespace).Get(sim.ctx, p.Name, metav1.GetOptions{})
