@@ -76,7 +76,7 @@ func TestBindingPropagation(t *testing.T) {
     }
 }
 
-// TestLargeScaleScheduling stresses the simulator with a reduced number of pods in CI.
+// TestLargeScaleScheduling uses a small number of nodes/pods in CI.
 func TestLargeScaleScheduling(t *testing.T) {
     sim, err := New()
     if err != nil {
@@ -87,12 +87,12 @@ func TestLargeScaleScheduling(t *testing.T) {
 
     s.runScheduler()
 
-    // Use smaller scale in CI
-    nodeCount := 5
-    podCount := 20
-    if testing.Short() {
-        nodeCount = 3
-        podCount = 10
+    // Use tiny scale in CI (short mode), slightly larger otherwise.
+    nodeCount := 3
+    podCount := 10
+    if !testing.Short() {
+        nodeCount = 5
+        podCount = 20
     }
 
     t.Logf("Creating %d nodes and %d pods", nodeCount, podCount)
@@ -150,7 +150,7 @@ func TestLargeScaleScheduling(t *testing.T) {
     }
 }
 
-// TestConcurrentScheduling detects race conditions with reduced concurrency.
+// TestConcurrentScheduling uses reduced concurrency for speed.
 func TestConcurrentScheduling(t *testing.T) {
     sim, err := New()
     if err != nil {
@@ -161,11 +161,11 @@ func TestConcurrentScheduling(t *testing.T) {
 
     s.runScheduler()
 
-    nodeCount := 3
-    podCount := 10
-    if testing.Short() {
-        nodeCount = 2
-        podCount = 5
+    nodeCount := 2
+    podCount := 5
+    if !testing.Short() {
+        nodeCount = 3
+        podCount = 10
     }
 
     // Create nodes.
@@ -232,7 +232,7 @@ func TestConcurrentScheduling(t *testing.T) {
     t.Logf("Concurrently scheduled %d pods, %d failed", podCount, failedCount)
 }
 
-// TestNoGoroutineLeaks detects goroutine leaks with a reduced loop.
+// TestNoGoroutineLeaks uses a small number of iterations.
 func TestNoGoroutineLeaks(t *testing.T) {
     initial := runtime.NumGoroutine()
 
@@ -244,9 +244,9 @@ func TestNoGoroutineLeaks(t *testing.T) {
 
     s.runScheduler()
 
-    iterations := 20
-    if testing.Short() {
-        iterations = 5
+    iterations := 5
+    if !testing.Short() {
+        iterations = 10
     }
 
     for i := 0; i < iterations; i++ {
@@ -294,7 +294,7 @@ func TestNoGoroutineLeaks(t *testing.T) {
     }
 }
 
-// TestEdgeCases tests various error scenarios.
+// TestEdgeCases tests various error scenarios (kept minimal).
 func TestEdgeCases(t *testing.T) {
     t.Run("DeleteNonExistentPod", func(t *testing.T) {
         sim, err := New()

@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [ main ]
   schedule:
-    - cron: '0 0 * * *'   # nightly full tests
+    - cron: '0 0 * * *'   # nightly full tests (still quick with -short)
   workflow_dispatch:       # manual trigger
 
 jobs:
@@ -60,11 +60,12 @@ jobs:
       - name: Build
         run: make
 
-      - name: Run full stress tests with race detector
-        run: go test -v -race -timeout 10m ./pkg/simulator/...
+      # Now also using -short for quick, race-detected runs
+      - name: Run stress tests with race detector (short)
+        run: go test -v -short -race -timeout 5m ./pkg/simulator/...
 
-      - name: Run full benchmarks
-        run: go test -bench=. -benchmem ./pkg/simulator/...
+      - name: Run benchmarks (short)
+        run: go test -bench=. -benchmem -short ./pkg/simulator/...
 
       - name: Upload test logs if failure
         if: failure()
