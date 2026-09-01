@@ -14,10 +14,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/watch" // <-- NEW for binding controller
 	"k8s.io/client-go/informers"
 	externalclientset "k8s.io/client-go/kubernetes"
 	fakeclientset "k8s.io/client-go/kubernetes/fake"
+	"k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/kubernetes/cmd/kube-scheduler/app/config"
@@ -111,7 +111,6 @@ func New(opts ...Option) (Interface, error) {
 		}
 		client, err = externalclientset.NewForConfig(varConfig)
 	} else {
-		// Use fake client (no reactor needed – we handle Binding via controller)
 		client = fakeclientset.NewSimpleClientset()
 	}
 	kubeSchedulerConfig.Client = client
@@ -132,9 +131,7 @@ func New(opts ...Option) (Interface, error) {
 		customConfig:    options.customConfig,
 	}
 
-	// ------------------------------------------------------------------
-	// NEW: Start the binding controller to simulate real API server behavior
-	// ------------------------------------------------------------------
+	// Start the binding controller (reactor) for fake client
 	sim.startBindingController()
 
 	// create a scheduler
@@ -188,59 +185,55 @@ func New(opts ...Option) (Interface, error) {
 }
 
 // ------------------------------------------------------------------
-// startBindingController watches Binding objects and updates the
-// corresponding Pod's nodeName. This mimics the real API server's
-// behavior, which is missing in the fake client.
+// startBindingController sets up a reactor to intercept Binding creation
+// and update the corresponding Pod's nodeName. This mimics the real API
+// server behavior which is missing in the fake client.
 // ------------------------------------------------------------------
 func (sim *Simulator) startBindingController() {
-	go func() {
-		// Watch all Bindings across all namespaces.
-		watcher, err := sim.client.CoreV1().Bindings(corev1.NamespaceAll).Watch(sim.ctx, metav1.ListOptions{})
-		if err != nil {
-			log.Errorf("Failed to start Binding controller watch: %v", err)
-			return
-		}
-		defer watcher.Stop()
+	// Only works with fake client
+	fakeClient, ok := sim.client.(*fakeclientset.Clientset)
+	if !ok {
+		log.Debug("Binding controller: not using fake client, skipping")
+		return
+	}
 
-		for {
-			select {
-			case <-sim.ctx.Done():
-				log.Info("Binding controller stopped")
-				return
-			case event, ok := <-watcher.ResultChan():
-				if !ok {
-					log.Info("Binding watch channel closed")
-					return
-				}
-				// Process only added and modified Bindings.
-				if event.Type != watch.Added && event.Type != watch.Modified {
-					continue
-				}
-				binding, ok := event.Object.(*corev1.Binding)
-				if !ok {
-					log.Warnf("Binding controller: unexpected object type: %T", event.Object)
-					continue
-				}
-				// Find the corresponding Pod.
-				pod, err := sim.client.CoreV1().Pods(binding.Namespace).Get(sim.ctx, binding.Name, metav1.GetOptions{})
-				if err != nil {
-					// Pod might not exist yet or already deleted; log debug only.
-					log.Debugf("Binding controller: Pod %s/%s not found: %v", binding.Namespace, binding.Name, err)
-					continue
-				}
-				// Update the Pod's nodeName if not already set.
-				if pod.Spec.NodeName == "" {
-					pod.Spec.NodeName = binding.Target.Name
-					_, err = sim.client.CoreV1().Pods(binding.Namespace).Update(sim.ctx, pod, metav1.UpdateOptions{})
-					if err != nil {
-						log.Errorf("Binding controller: failed to update Pod %s/%s: %v", binding.Namespace, binding.Name, err)
-					} else {
-						log.Debugf("Binding controller: updated Pod %s/%s -> node %s", binding.Namespace, binding.Name, binding.Target.Name)
-					}
-				}
+	// Add a reactor that intercepts "create" on "bindings"
+	fakeClient.PrependReactor("create", "bindings", func(action testing.Action) (bool, runtime.Object, error) {
+		createAction, ok := action.(testing.CreateAction)
+		if !ok {
+			return false, nil, nil
+		}
+
+		binding, ok := createAction.GetObject().(*corev1.Binding)
+		if !ok {
+			return false, nil, nil
+		}
+
+		// Find the corresponding Pod
+		pod, err := sim.client.CoreV1().Pods(binding.Namespace).Get(sim.ctx, binding.Name, metav1.GetOptions{})
+		if err != nil {
+			// Pod not found yet; let binding creation proceed
+			return false, nil, nil
+		}
+
+		// Update the Pod's nodeName if not already set
+		if pod.Spec.NodeName == "" {
+			pod.Spec.NodeName = binding.Target.Name
+			_, err = sim.client.CoreV1().Pods(binding.Namespace).Update(sim.ctx, pod, metav1.UpdateOptions{})
+			if err != nil {
+				log.Errorf("Binding controller: failed to update Pod %s/%s: %v",
+					binding.Namespace, binding.Name, err)
+			} else {
+				log.Debugf("Binding controller: updated Pod %s/%s -> node %s",
+					binding.Namespace, binding.Name, binding.Target.Name)
 			}
 		}
-	}()
+
+		// Return false to allow the default binding creation to proceed
+		return false, nil, nil
+	})
+
+	log.Info("Binding controller: reactor installed for fake client")
 }
 
 // RunCluster with real client in a production cluster or fake client in a simulated cluster.
@@ -326,7 +319,7 @@ func (sim *Simulator) createPod(p *corev1.Pod) error {
 		return fmt.Errorf("%s(%s): %s", simontype.CreatePodError, utils.GeneratePodKey(p), err.Error())
 	}
 	// synchronization
-	sim.syncPodCreate(p, 2*time.Millisecond)   // pass the pod pointer
+	sim.syncPodCreate(p, 2*time.Millisecond) // pass the pod pointer
 	// Now p.Spec.NodeName has been set by the scheduler, no need to re-fetch
 	if p.Spec.NodeName != "" {
 		sim.syncNodeUpdateOnPodCreate(p.Spec.NodeName, p, 2*time.Millisecond)
@@ -409,7 +402,7 @@ func (sim *Simulator) Close() {
 }
 
 func (sim *Simulator) isPodScheduled(pod *corev1.Pod) bool {
-    return pod != nil && pod.Spec.NodeName != ""
+	return pod != nil && pod.Spec.NodeName != ""
 }
 
 func (sim *Simulator) isPodUnscheduled(pod *corev1.Pod) bool {
@@ -425,7 +418,7 @@ func (sim *Simulator) isPodUnscheduled(pod *corev1.Pod) bool {
 }
 
 func (sim *Simulator) isPodCreated(pod *corev1.Pod) bool {
-    return sim.isPodScheduled(pod) || sim.isPodUnscheduled(pod)
+	return sim.isPodScheduled(pod) || sim.isPodUnscheduled(pod)
 }
 
 func (sim *Simulator) isPodDeleted(ns, name string) bool {
@@ -458,12 +451,12 @@ func (sim *Simulator) isPodFoundInNodeGpuAnno(node *corev1.Node, p *corev1.Pod) 
 }
 
 func (sim *Simulator) syncPodCreate(pod *corev1.Pod, d time.Duration) {
-    for {
-        if sim.isPodCreated(pod) {
-            break
-        }
-        time.Sleep(d)
-    }
+	for {
+		if sim.isPodCreated(pod) {
+			break
+		}
+		time.Sleep(d)
+	}
 }
 
 func (sim *Simulator) syncPodDelete(ns, name string, d time.Duration) {
