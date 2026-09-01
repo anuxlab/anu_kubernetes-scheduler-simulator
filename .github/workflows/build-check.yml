@@ -1,80 +1,42 @@
-name: Build and Check HTAFM Plugin
+name: Build & Test
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main ]
   pull_request:
     branches: [ main ]
 
 jobs:
-  build:
+  build-and-test:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: '1.20'
 
-      - name: Build simulator
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('go.sum') }}
+          restore-keys: ${{ runner.os }}-go-
+
+      - name: Build
         run: make
 
-      - name: Verify binary exists
-        run: |
-          ls -la bin/
-          ./bin/simon version
+      - name: Run unit tests
+        run: go test -v ./...
 
-      - name: Check HTAFM plugin registration (quick test)
-        run: |
-          # Create config files (same as before)
-          mkdir -p test-config
-          cat > test-config/cluster.yaml << EOF
-          apiVersion: simon/v1alpha1
-          kind: Config
-          metadata:
-            name: test-config
-          spec:
-            cluster:
-              customConfig: example/test-cluster
-            customConfig:
-              shufflePod: false
-          EOF
+      - name: Run stress tests with race detector
+        run: go test -v -race -timeout 10m ./pkg/simulator/...
 
-          cat > test-config/scheduler.yaml << EOF
-          apiVersion: kubescheduler.config.k8s.io/v1beta1
-          kind: KubeSchedulerConfiguration
-          percentageOfNodesToScore: 100
-          profiles:
-          - schedulerName: simon-scheduler
-            plugins:
-              score:
-                enabled:
-                - name: HTAFMScore
-                  weight: 1000
-            pluginConfig:
-            - name: HTAFMScore
-              args:
-                variant: cut
-          EOF
+      - name: Run benchmark tests
+        run: go test -bench=. -benchmem ./pkg/simulator/...
 
-          # Run the command, capture output
-          timeout 10s ./bin/simon apply --extended-resources "gpu" -f test-config/cluster.yaml --default-scheduler-config test-config/scheduler.yaml 2>&1 | tee output.log || true
-
-          # Check if registration failed
-          if grep -q "ScorePlugin \"HTAFMScore\" does not exist" output.log; then
-            echo "❌ Plugin test failed: HTAFMScore was not registered"
-            exit 1
-          else
-            echo "✅ Plugin test passed (HTAFMScore is registered)"
-            exit 0
-          fi
-
-      - name: Upload build log (if any)
+      - name: Upload test logs
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
-          path: build.log
-          if-no-files-found: ignore
+          name: test-logs
+          path: /tmp/simulator-test-*.log

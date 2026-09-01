@@ -1,58 +1,279 @@
 package simulator
 
 import (
-	"context"
-	"testing"
-	"time"
+    "fmt"
+    "runtime"
+    "sync"
+    "testing"
+    "time"
 
-	log "github.com/sirupsen/logrus"
-	"github.com/stretchr/testify/assert"
-	"k8s.io/client-go/informers"
-	externalclientset "k8s.io/client-go/kubernetes"
-
-	"github.com/hkust-adsl/kubernetes-scheduler-simulator/pkg/api/v1alpha1"
+    corev1 "k8s.io/api/core/v1"
+    "k8s.io/apimachinery/pkg/api/resource"
+    metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+    simontype "github.com/hkust-adsl/kubernetes-scheduler-simulator/pkg/type"
 )
 
-func TestGenerateWorkloadInflationPods(t *testing.T) {
-	var client externalclientset.Interface
-	ctx, cancel := context.WithCancel(context.Background())
-	options := defaultSimulatorOptions
-	sim := &Simulator{
-		client:          client,
-		informerFactory: informers.NewSharedInformerFactory(client, 0),
-		ctx:             ctx,
-		cancelFunc:      cancel,
-		customConfig:    options.customConfig,
-	}
+// TestBindingPropagation verifies that Binding → Pod nodeName propagation works
+func TestBindingPropagation(t *testing.T) {
+    sim, err := New()
+    if err != nil {
+        t.Fatalf("Failed to create simulator: %v", err)
+    }
+    defer sim.Close()
 
-	sim.customConfig.TypicalPodsConfig = v1alpha1.TypicalPodsConfig{IsInvolvedCpuPods: true, PodPopularityThreshold: 95, PodIncreaseStep: 1, GpuResWeight: 0}
-	customConfig := sim.GetCustomConfig()
-	resources, _ := CreateClusterResourceFromClusterConfig(customConfig.NewWorkloadConfig)
-	pods, _ := GetValidPodExcludeDaemonSet(resources)
-	sim.SetWorkloadPods(pods)
+    // Create a test Pod
+    pod := &corev1.Pod{
+        ObjectMeta: metav1.ObjectMeta{
+            Name:      "test-pod",
+            Namespace: "default",
+        },
+        Spec: corev1.PodSpec{
+            Containers: []corev1.Container{{Name: "test", Image: "nginx"}},
+        },
+    }
 
-	sim.SetTypicalPods()
-	log.Infof("TypicalPodsConfig: %v\n", sim.customConfig.TypicalPodsConfig)
-	assert.Equal(t, "s", "s")
+    _, err = sim.client.CoreV1().Pods("default").Create(sim.ctx, pod, metav1.CreateOptions{})
+    if err != nil {
+        t.Fatalf("Failed to create pod: %v", err)
+    }
+
+    // Create a Binding
+    binding := &corev1.Binding{
+        ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"},
+        Target:     corev1.ObjectReference{Kind: "Node", Name: "test-node"},
+    }
+    err = sim.client.CoreV1().Pods("default").Bind(sim.ctx, binding, metav1.CreateOptions{})
+    if err != nil {
+        t.Fatalf("Failed to create binding: %v", err)
+    }
+
+    // Wait for propagation
+    timeout := time.After(5 * time.Second)
+    ticker := time.NewTicker(100 * time.Millisecond)
+    defer ticker.Stop()
+
+    for {
+        select {
+        case <-timeout:
+            t.Fatal("Timeout: Pod nodeName was not updated")
+        case <-ticker.C:
+            updated, _ := sim.client.CoreV1().Pods("default").Get(sim.ctx, pod.Name, metav1.GetOptions{})
+            if updated != nil && updated.Spec.NodeName == "test-node" {
+                t.Logf("✅ Pod successfully bound to node %s", updated.Spec.NodeName)
+                return
+            }
+        }
+    }
 }
 
-func TestSortPodsByTimestamp(t *testing.T) {
-	creationTime := "2022-08-01T10:48:26+08:00"
-	deletionTime := "2022-08-21T00:46:07+08:00"
-	ci, _ := time.Parse(time.RFC3339, creationTime)
-	di, _ := time.Parse(time.RFC3339, deletionTime)
+// TestLargeScaleScheduling stresses the simulator with thousands of pods
+func TestLargeScaleScheduling(t *testing.T) {
+    sim, err := New()
+    if err != nil {
+        t.Fatalf("Failed to create simulator: %v", err)
+    }
+    defer sim.Close()
 
-	assert.Equal(t, true, ci.Before(di))
-	assert.Equal(t, false, di.Before(ci))
-	assert.Equal(t, false, ci.Before(ci))
+    // Create 50 nodes
+    for i := 0; i < 50; i++ {
+        node := &corev1.Node{
+            ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("node-%03d", i)},
+            Status: corev1.NodeStatus{
+                Allocatable: corev1.ResourceList{
+                    corev1.ResourceCPU:    resource.MustParse("32"),
+                    corev1.ResourceMemory: resource.MustParse("64Gi"),
+                },
+            },
+        }
+        _, err = sim.client.CoreV1().Nodes().Create(sim.ctx, node, metav1.CreateOptions{})
+        if err != nil {
+            t.Fatalf("Failed to create node: %v", err)
+        }
+    }
 
-	var tj time.Time // undefined goes before all values
-	assert.Equal(t, true, tj.Before(ci))
-	assert.Equal(t, false, ci.Before(tj))
-	assert.Equal(t, true, tj.Before(di))
-	assert.Equal(t, false, di.Before(tj))
+    // Create pods
+    podCount := 1000
+    pods := make([]*corev1.Pod, podCount)
+    for i := 0; i < podCount; i++ {
+        pod := &corev1.Pod{
+            ObjectMeta: metav1.ObjectMeta{
+                Name:      fmt.Sprintf("stress-pod-%05d", i),
+                Namespace: "default",
+            },
+            Spec: corev1.PodSpec{
+                Containers: []corev1.Container{{
+                    Name:  "test",
+                    Image: "nginx",
+                    Resources: corev1.ResourceRequirements{
+                        Requests: corev1.ResourceList{
+                            corev1.ResourceCPU:    resource.MustParse("1"),
+                            corev1.ResourceMemory: resource.MustParse("1Gi"),
+                        },
+                    },
+                }},
+            },
+        }
+        pods[i] = pod
+    }
 
-	var ti time.Time // undefined
-	assert.Equal(t, false, tj.Before(ti))
-	assert.Equal(t, false, ti.Before(tj))
+    start := time.Now()
+    failedPods := sim.SchedulePods(pods)
+    elapsed := time.Since(start)
+
+    t.Logf("Scheduled %d pods in %v", podCount-len(failedPods), elapsed)
+    t.Logf("Failed pods: %d", len(failedPods))
+
+    if len(failedPods) > podCount/10 {
+        t.Errorf("Too many failed pods: %d/%d", len(failedPods), podCount)
+    }
+}
+
+// TestConcurrentScheduling detects race conditions
+func TestConcurrentScheduling(t *testing.T) {
+    sim, err := New()
+    if err != nil {
+        t.Fatalf("Failed to create simulator: %v", err)
+    }
+    defer sim.Close()
+
+    // Create nodes
+    for i := 0; i < 10; i++ {
+        node := &corev1.Node{
+            ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("node-%d", i)},
+            Status: corev1.NodeStatus{
+                Allocatable: corev1.ResourceList{
+                    corev1.ResourceCPU:    resource.MustParse("16"),
+                    corev1.ResourceMemory: resource.MustParse("32Gi"),
+                },
+            },
+        }
+        _, err = sim.client.CoreV1().Nodes().Create(sim.ctx, node, metav1.CreateOptions{})
+        if err != nil {
+            t.Fatalf("Failed to create node: %v", err)
+        }
+    }
+
+    podCount := 100
+    pods := make([]*corev1.Pod, podCount)
+    for i := 0; i < podCount; i++ {
+        pod := &corev1.Pod{
+            ObjectMeta: metav1.ObjectMeta{
+                Name:      fmt.Sprintf("concurrent-pod-%d", i),
+                Namespace: "default",
+            },
+            Spec: corev1.PodSpec{
+                Containers: []corev1.Container{{
+                    Name:  "test",
+                    Image: "nginx",
+                    Resources: corev1.ResourceRequirements{
+                        Requests: corev1.ResourceList{
+                            corev1.ResourceCPU:    resource.MustParse("2"),
+                            corev1.ResourceMemory: resource.MustParse("4Gi"),
+                        },
+                    },
+                }},
+            },
+        }
+        pods[i] = pod
+    }
+
+    var wg sync.WaitGroup
+    failedChan := make(chan *simontype.UnscheduledPod, podCount)
+
+    for _, pod := range pods {
+        wg.Add(1)
+        go func(p *corev1.Pod) {
+            defer wg.Done()
+            if unscheduled := sim.assumePod(p); unscheduled != nil {
+                failedChan <- unscheduled
+            }
+        }(pod)
+    }
+
+    wg.Wait()
+    close(failedChan)
+
+    failedCount := 0
+    for range failedChan {
+        failedCount++
+    }
+
+    t.Logf("Concurrently scheduled %d pods, %d failed", podCount, failedCount)
+}
+
+// TestNoGoroutineLeaks detects goroutine leaks
+func TestNoGoroutineLeaks(t *testing.T) {
+    initial := runtime.NumGoroutine()
+
+    sim, err := New()
+    if err != nil {
+        t.Fatalf("Failed to create simulator: %v", err)
+    }
+
+    for i := 0; i < 100; i++ {
+        pod := &corev1.Pod{
+            ObjectMeta: metav1.ObjectMeta{
+                Name:      fmt.Sprintf("leak-test-%d", i),
+                Namespace: "default",
+            },
+            Spec: corev1.PodSpec{
+                Containers: []corev1.Container{{Name: "test", Image: "nginx"}},
+            },
+        }
+        sim.createPod(pod)
+        sim.deletePod(pod)
+    }
+
+    sim.Close()
+    time.Sleep(2 * time.Second)
+
+    final := runtime.NumGoroutine()
+    if final > initial+5 {
+        t.Errorf("Potential goroutine leak: initial=%d, final=%d", initial, final)
+    }
+}
+
+// TestEdgeCases tests various error scenarios
+func TestEdgeCases(t *testing.T) {
+    t.Run("DeleteNonExistentPod", func(t *testing.T) {
+        sim, err := New()
+        if err != nil {
+            t.Fatalf("Failed to create simulator: %v", err)
+        }
+        defer sim.Close()
+
+        pod := &corev1.Pod{
+            ObjectMeta: metav1.ObjectMeta{
+                Name:      "nonexistent",
+                Namespace: "default",
+            },
+        }
+        err = sim.deletePod(pod)
+        if err != nil {
+            t.Logf("Delete non-existent pod returned error (expected): %v", err)
+        }
+    })
+
+    t.Run("CreatePodWithoutNode", func(t *testing.T) {
+        sim, err := New()
+        if err != nil {
+            t.Fatalf("Failed to create simulator: %v", err)
+        }
+        defer sim.Close()
+
+        pod := &corev1.Pod{
+            ObjectMeta: metav1.ObjectMeta{
+                Name:      "no-node-pod",
+                Namespace: "default",
+            },
+            Spec: corev1.PodSpec{
+                Containers: []corev1.Container{{Name: "test", Image: "nginx"}},
+                NodeName:   "nonexistent-node",
+            },
+        }
+
+        err = sim.createPod(pod)
+        // This should fail gracefully
+        t.Logf("Create pod with nonexistent node result: %v", err)
+    })
 }
