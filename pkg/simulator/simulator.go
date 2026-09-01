@@ -14,10 +14,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/watch" // <-- NEW for binding controller
 	"k8s.io/client-go/informers"
 	externalclientset "k8s.io/client-go/kubernetes"
 	fakeclientset "k8s.io/client-go/kubernetes/fake"
-	"k8s.io/client-go/testing" // <-- NEW import for reactor
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/kubernetes/cmd/kube-scheduler/app/config"
@@ -111,37 +111,8 @@ func New(opts ...Option) (Interface, error) {
 		}
 		client, err = externalclientset.NewForConfig(varConfig)
 	} else {
+		// Use fake client (no reactor needed – we handle Binding via controller)
 		client = fakeclientset.NewSimpleClientset()
-
-		// =====================================================================
-		//  FIX: Add a reactor to sync Pod's nodeName when a Binding is created
-		// =====================================================================
-		// This prevents the fake client from storing *v1.Binding in the Pod
-		// informer, which causes type mismatch panics and hangs.
-		fakeClient := client.(*fakeclientset.Clientset)
-		fakeClient.PrependReactor("create", "bindings", func(action testing.Action) (bool, runtime.Object, error) {
-			binding := action.(testing.CreateAction).GetObject().(*corev1.Binding)
-
-			// Get the corresponding Pod
-			pod, err := fakeClient.CoreV1().Pods(binding.Namespace).Get(context.TODO(), binding.Name, metav1.GetOptions{})
-			if err != nil {
-				// Pod not found; let the binding creation proceed anyway
-				return false, nil, nil
-			}
-
-			// Update the Pod's node name
-			pod.Spec.NodeName = binding.Target.Name
-
-			// Update the Pod in the fake store
-			_, err = fakeClient.CoreV1().Pods(binding.Namespace).Update(context.TODO(), pod, metav1.UpdateOptions{})
-			if err != nil {
-				log.Warnf("Failed to update pod %s after binding: %v", binding.Name, err)
-			}
-
-			// Return false to let the default binding creation proceed
-			return false, nil, nil
-		})
-		// =====================================================================
 	}
 	kubeSchedulerConfig.Client = client
 	sharedInformerFactory := informers.NewSharedInformerFactory(client, 0)
@@ -160,6 +131,11 @@ func New(opts ...Option) (Interface, error) {
 		cancelFunc:      cancel,
 		customConfig:    options.customConfig,
 	}
+
+	// ------------------------------------------------------------------
+	// NEW: Start the binding controller to simulate real API server behavior
+	// ------------------------------------------------------------------
+	sim.startBindingController()
 
 	// create a scheduler
 	bindRegistry := frameworkruntime.Registry{
@@ -209,6 +185,62 @@ func New(opts ...Option) (Interface, error) {
 	}
 
 	return sim, nil
+}
+
+// ------------------------------------------------------------------
+// startBindingController watches Binding objects and updates the
+// corresponding Pod's nodeName. This mimics the real API server's
+// behavior, which is missing in the fake client.
+// ------------------------------------------------------------------
+func (sim *Simulator) startBindingController() {
+	go func() {
+		// Watch all Bindings across all namespaces.
+		watcher, err := sim.client.CoreV1().Bindings(corev1.NamespaceAll).Watch(sim.ctx, metav1.ListOptions{})
+		if err != nil {
+			log.Errorf("Failed to start Binding controller watch: %v", err)
+			return
+		}
+		defer watcher.Stop()
+
+		for {
+			select {
+			case <-sim.ctx.Done():
+				log.Info("Binding controller stopped")
+				return
+			case event, ok := <-watcher.ResultChan():
+				if !ok {
+					log.Info("Binding watch channel closed")
+					return
+				}
+				// Process only added and modified Bindings.
+				if event.Type != watch.Added && event.Type != watch.Modified {
+					continue
+				}
+				binding, ok := event.Object.(*corev1.Binding)
+				if !ok {
+					log.Warnf("Binding controller: unexpected object type: %T", event.Object)
+					continue
+				}
+				// Find the corresponding Pod.
+				pod, err := sim.client.CoreV1().Pods(binding.Namespace).Get(sim.ctx, binding.Name, metav1.GetOptions{})
+				if err != nil {
+					// Pod might not exist yet or already deleted; log debug only.
+					log.Debugf("Binding controller: Pod %s/%s not found: %v", binding.Namespace, binding.Name, err)
+					continue
+				}
+				// Update the Pod's nodeName if not already set.
+				if pod.Spec.NodeName == "" {
+					pod.Spec.NodeName = binding.Target.Name
+					_, err = sim.client.CoreV1().Pods(binding.Namespace).Update(sim.ctx, pod, metav1.UpdateOptions{})
+					if err != nil {
+						log.Errorf("Binding controller: failed to update Pod %s/%s: %v", binding.Namespace, binding.Name, err)
+					} else {
+						log.Debugf("Binding controller: updated Pod %s/%s -> node %s", binding.Namespace, binding.Name, binding.Target.Name)
+					}
+				}
+			}
+		}
+	}()
 }
 
 // RunCluster with real client in a production cluster or fake client in a simulated cluster.
