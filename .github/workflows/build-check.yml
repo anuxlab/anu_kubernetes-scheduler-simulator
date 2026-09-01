@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [ main ]
   schedule:
-    - cron: '0 0 * * *'   # nightly full tests (still quick with -short)
+    - cron: '0 0 * * *'   # nightly full tests
   workflow_dispatch:       # manual trigger
 
 jobs:
@@ -60,7 +60,6 @@ jobs:
       - name: Build
         run: make
 
-      # Now also using -short for quick, race-detected runs
       - name: Run stress tests with race detector (short)
         run: go test -v -short -race -timeout 5m ./pkg/simulator/...
 
@@ -73,3 +72,87 @@ jobs:
         with:
           name: stress-test-logs
           path: /tmp/simulator-test-*.log
+
+  kind-experiment:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'  # Only run manually for now
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.20'
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Install kubectl
+        run: |
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          sudo mv kubectl /usr/local/bin/
+
+      - name: Create kind cluster
+        run: kind create cluster --wait 5m
+
+      - name: Build simulator
+        run: |
+          make
+          chmod +x bin/simon
+
+      - name: Run HTAFM experiment with kind
+        run: |
+          # Create a minimal test config
+          mkdir -p test-config
+          cat > test-config/cluster.yaml << EOF
+          apiVersion: simon/v1alpha1
+          kind: Config
+          metadata:
+            name: test-config
+          spec:
+            cluster: {}
+            customConfig:
+              shufflePod: true
+              typicalPodsConfig:
+                gpuResWeight: 0
+                isInvolvedCpuPods: true
+                podIncreaseStep: 1
+                podPopularityThreshold: 95
+              workloadInflationConfig:
+                ratio: 1
+                seed: 233
+              workloadTuningConfig:
+                ratio: 1.3
+                seed: 50
+          EOF
+
+          cat > test-config/scheduler.yaml << EOF
+          apiVersion: kubescheduler.config.k8s.io/v1beta1
+          kind: KubeSchedulerConfiguration
+          percentageOfNodesToScore: 100
+          profiles:
+          - schedulerName: simon-scheduler
+            plugins:
+              score:
+                enabled:
+                - name: HTAFMScore
+                  weight: 1000
+            pluginConfig:
+            - name: HTAFMScore
+              args:
+                variant: cut
+          EOF
+
+          ./bin/simon apply --kubeconfig ~/.kube/config \
+            -f test-config/cluster.yaml \
+            --default-scheduler-config test-config/scheduler.yaml \
+            2>&1 | tee kind-experiment.log
+
+      - name: Upload kind experiment logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kind-experiment-logs
+          path: kind-experiment.log
