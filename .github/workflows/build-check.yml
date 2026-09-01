@@ -43,7 +43,7 @@ jobs:
 
   stress-test:
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -75,7 +75,7 @@ jobs:
 
   kind-experiment:
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'  # Only run manually for now
+    # if: github.event_name == 'workflow_dispatch'  # Only run manually for now
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
