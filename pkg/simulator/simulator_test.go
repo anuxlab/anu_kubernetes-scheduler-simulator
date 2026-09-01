@@ -10,6 +10,7 @@ import (
     corev1 "k8s.io/api/core/v1"
     "k8s.io/apimachinery/pkg/api/resource"
     metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
     simontype "github.com/hkust-adsl/kubernetes-scheduler-simulator/pkg/type"
 )
 
@@ -20,6 +21,7 @@ func TestBindingPropagation(t *testing.T) {
         t.Fatalf("Failed to create simulator: %v", err)
     }
     defer sim.Close()
+    s := sim.(*Simulator) // type assertion to access unexported fields
 
     // Create a test Pod
     pod := &corev1.Pod{
@@ -32,7 +34,7 @@ func TestBindingPropagation(t *testing.T) {
         },
     }
 
-    _, err = sim.client.CoreV1().Pods("default").Create(sim.ctx, pod, metav1.CreateOptions{})
+    _, err = s.client.CoreV1().Pods("default").Create(s.ctx, pod, metav1.CreateOptions{})
     if err != nil {
         t.Fatalf("Failed to create pod: %v", err)
     }
@@ -42,7 +44,7 @@ func TestBindingPropagation(t *testing.T) {
         ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: "default"},
         Target:     corev1.ObjectReference{Kind: "Node", Name: "test-node"},
     }
-    err = sim.client.CoreV1().Pods("default").Bind(sim.ctx, binding, metav1.CreateOptions{})
+    err = s.client.CoreV1().Pods("default").Bind(s.ctx, binding, metav1.CreateOptions{})
     if err != nil {
         t.Fatalf("Failed to create binding: %v", err)
     }
@@ -57,7 +59,7 @@ func TestBindingPropagation(t *testing.T) {
         case <-timeout:
             t.Fatal("Timeout: Pod nodeName was not updated")
         case <-ticker.C:
-            updated, _ := sim.client.CoreV1().Pods("default").Get(sim.ctx, pod.Name, metav1.GetOptions{})
+            updated, _ := s.client.CoreV1().Pods("default").Get(s.ctx, pod.Name, metav1.GetOptions{})
             if updated != nil && updated.Spec.NodeName == "test-node" {
                 t.Logf("✅ Pod successfully bound to node %s", updated.Spec.NodeName)
                 return
@@ -73,6 +75,7 @@ func TestLargeScaleScheduling(t *testing.T) {
         t.Fatalf("Failed to create simulator: %v", err)
     }
     defer sim.Close()
+    s := sim.(*Simulator)
 
     // Create 50 nodes
     for i := 0; i < 50; i++ {
@@ -85,13 +88,13 @@ func TestLargeScaleScheduling(t *testing.T) {
                 },
             },
         }
-        _, err = sim.client.CoreV1().Nodes().Create(sim.ctx, node, metav1.CreateOptions{})
+        _, err = s.client.CoreV1().Nodes().Create(s.ctx, node, metav1.CreateOptions{})
         if err != nil {
             t.Fatalf("Failed to create node: %v", err)
         }
     }
 
-    // Create pods
+    // Create 1000 pods
     podCount := 1000
     pods := make([]*corev1.Pod, podCount)
     for i := 0; i < podCount; i++ {
@@ -117,7 +120,7 @@ func TestLargeScaleScheduling(t *testing.T) {
     }
 
     start := time.Now()
-    failedPods := sim.SchedulePods(pods)
+    failedPods := s.SchedulePods(pods)
     elapsed := time.Since(start)
 
     t.Logf("Scheduled %d pods in %v", podCount-len(failedPods), elapsed)
@@ -135,6 +138,7 @@ func TestConcurrentScheduling(t *testing.T) {
         t.Fatalf("Failed to create simulator: %v", err)
     }
     defer sim.Close()
+    s := sim.(*Simulator)
 
     // Create nodes
     for i := 0; i < 10; i++ {
@@ -147,7 +151,7 @@ func TestConcurrentScheduling(t *testing.T) {
                 },
             },
         }
-        _, err = sim.client.CoreV1().Nodes().Create(sim.ctx, node, metav1.CreateOptions{})
+        _, err = s.client.CoreV1().Nodes().Create(s.ctx, node, metav1.CreateOptions{})
         if err != nil {
             t.Fatalf("Failed to create node: %v", err)
         }
@@ -184,7 +188,7 @@ func TestConcurrentScheduling(t *testing.T) {
         wg.Add(1)
         go func(p *corev1.Pod) {
             defer wg.Done()
-            if unscheduled := sim.assumePod(p); unscheduled != nil {
+            if unscheduled := s.assumePod(p); unscheduled != nil {
                 failedChan <- unscheduled
             }
         }(pod)
@@ -209,6 +213,7 @@ func TestNoGoroutineLeaks(t *testing.T) {
     if err != nil {
         t.Fatalf("Failed to create simulator: %v", err)
     }
+    s := sim.(*Simulator)
 
     for i := 0; i < 100; i++ {
         pod := &corev1.Pod{
@@ -220,8 +225,8 @@ func TestNoGoroutineLeaks(t *testing.T) {
                 Containers: []corev1.Container{{Name: "test", Image: "nginx"}},
             },
         }
-        sim.createPod(pod)
-        sim.deletePod(pod)
+        s.createPod(pod)
+        s.deletePod(pod)
     }
 
     sim.Close()
@@ -241,6 +246,7 @@ func TestEdgeCases(t *testing.T) {
             t.Fatalf("Failed to create simulator: %v", err)
         }
         defer sim.Close()
+        s := sim.(*Simulator)
 
         pod := &corev1.Pod{
             ObjectMeta: metav1.ObjectMeta{
@@ -248,7 +254,7 @@ func TestEdgeCases(t *testing.T) {
                 Namespace: "default",
             },
         }
-        err = sim.deletePod(pod)
+        err = s.deletePod(pod)
         if err != nil {
             t.Logf("Delete non-existent pod returned error (expected): %v", err)
         }
@@ -260,6 +266,7 @@ func TestEdgeCases(t *testing.T) {
             t.Fatalf("Failed to create simulator: %v", err)
         }
         defer sim.Close()
+        s := sim.(*Simulator)
 
         pod := &corev1.Pod{
             ObjectMeta: metav1.ObjectMeta{
@@ -272,7 +279,7 @@ func TestEdgeCases(t *testing.T) {
             },
         }
 
-        err = sim.createPod(pod)
+        err = s.createPod(pod)
         // This should fail gracefully
         t.Logf("Create pod with nonexistent node result: %v", err)
     })
